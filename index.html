@@ -173,7 +173,7 @@ footer{display:flex;align-items:center;justify-content:space-between;border-top:
 </div>
 <div class="toast" id="toast" role="status"></div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 /* ---------- identity and table ---------- */
 const $ = s => document.querySelector(s);
@@ -190,75 +190,105 @@ $('#code').textContent = '· ' + code;
 
 let S = null, receivedAt = 0, firstRender = true, lastRound = -1;
 
-/* ---------- connection: the first browser on a table link hosts it, everyone else connects to that browser ---------- */
-const HOST_PREFIX = 'tisch21-v1-';
-let peer = null, hostConn = null, table = null, retryT = null;
-const conns = new Map();
+/* ---------- connection ----------
+   Everyone talks through public MQTT brokers over a secure websocket, so no browser
+   has to reach another one directly. The host's browser runs the table and
+   publishes it; the others send their moves. If the host disappears, the next
+   browser takes over with everybody's balance. */
+const BROKERS = ['wss://broker.hivemq.com:8884/mqtt', 'wss://broker.emqx.io:8084/mqtt'];
+const T = 'tisch21/v2/' + code;
+const HOST_DEAD_MS = 12000;
+let links = [], table = null, lastView = null, lastBeat = 0, lastHost = null, lastSeq = -1, seq = 0;
+const seen = new Map();
 const validId = id => typeof id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(id);
-function showState(view) { S = view; receivedAt = Date.now(); render(); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function showState(view) { S = view; lastView = view; receivedAt = Date.now(); render(); }
 function setConnecting(text) { if (!S) $('#status').textContent = text; }
 
-function start() {
-  clearTimeout(retryT);
-  if (typeof Peer === 'undefined') { $('#status').textContent = 'Verbindungsdienst nicht erreichbar. Seite neu laden.'; return; }
-  setConnecting('Verbinde mit dem Tisch');
-  peer = new Peer(HOST_PREFIX + code, { debug: 0 });
-  peer.on('open', becomeHost);
-  peer.on('error', e => {
-    if (e.type === 'unavailable-id') { peer.destroy(); joinAsGuest(); }
-    else if (!table) retry();
+function connectBroker(url) {
+  return new Promise(res => {
+    const c = mqtt.connect(url, { reconnectPeriod: 2000, connectTimeout: 8000, clean: true, keepalive: 30 });
+    let done = false;
+    c.on('connect', () => { if (!done) { done = true; res(c); } });
+    setTimeout(() => { if (!done) { done = true; c.end(true); res(null); } }, 8000);
   });
+}
+async function start() {
+  if (typeof mqtt === 'undefined') { $('#status').textContent = 'Verbindungsdienst nicht erreichbar. Seite neu laden.'; return; }
+  setConnecting('Verbinde mit dem Tisch');
+  links = (await Promise.all(BROKERS.map(connectBroker))).filter(Boolean);
+  if (!links.length) { $('#status').textContent = 'Keine Verbindung zum Tisch. Neuer Versuch in 5 s'; setTimeout(start, 5000); return; }
+  for (const c of links) {
+    c.subscribe([T + '/state', T + '/act', T + '/note/' + myId]);
+    c.on('message', onMessage);
+  }
+  await sleep(2500);                       // a living host answers with its retained table
+  if (!hostAlive()) becomeHost();
+  setInterval(watch, 2000);
+  setInterval(() => { if (!table) post('act', { type: 'ping' }); }, 5000);
+  post('act', { type: 'ping' });
+}
+const hostAlive = () => Date.now() - lastBeat < HOST_DEAD_MS;
+function post(kind, data, retain) {
+  const msg = JSON.stringify(Object.assign({ id: myId }, data));
+  if (kind === 'state') for (const c of links) c.publish(T + '/state', msg, { retain: true });
+  else { const c = links.find(l => l.connected) || links[0]; if (c) c.publish(T + '/' + kind, msg); }
+}
+function onMessage(topic, buf) {
+  let d; try { d = JSON.parse(buf.toString()); } catch (e) { return; }
+  if (topic.endsWith('/state')) {
+    if (!d || !d.view || d.id === myId) return;
+    const fresh = d.ts && Date.now() - d.ts < HOST_DEAD_MS;
+    if (!fresh) { if (!lastView) lastView = d.view; if (d.id === lastHost) lastBeat = 0; return; }
+    if (table) {
+      // two hosts at once: the one with the smaller id keeps the table
+      if (d.id < myId) { table.stop(); table = null; $('#hostNote').hidden = true; } else return;
+    }
+    if (d.id === lastHost && d.seq <= lastSeq) return;   // same message via the second broker
+    lastHost = d.id; lastSeq = d.seq; lastBeat = Date.now();
+    showState(d.view);
+  } else if (topic.endsWith('/act')) {
+    if (!d || !validId(d.id) || typeof d.type !== 'string') return;
+    // everyone notes who is around, so a new host knows who is still online
+    if (d.id !== myId) {
+      const isNew = !seen.has(d.id) || Date.now() - seen.get(d.id) > HOST_DEAD_MS;
+      seen.set(d.id, Date.now());
+      if (table && isNew) table.setOnline(d.id, true);
+    }
+    if (!table) return;
+    if (d.type === 'ping') return;
+    const out = table.act(d.id, d);
+    if (typeof out === 'string') post('note/' + d.id, { msg: out });
+  } else if (d && d.msg) toast(d.msg);
 }
 function becomeHost() {
-  table = createTable(code, view => {
-    showState(view);
-    for (const c of conns.values()) if (c.open) c.send(view);
-  });
+  // take over everybody's balance from the last table we saw
+  const seed = {};
+  if (lastView) for (const p of lastView.players) seed[p.id] = p.chips;
+  table = createTable(code, view => { showState(view); post('state', { ts: Date.now(), seq: ++seq, view }); }, seed);
   $('#hostNote').hidden = false;
-  peer.on('connection', conn => {
-    const id = conn.metadata && conn.metadata.id;
-    if (!validId(id) || id === myId) { conn.on('open', () => conn.close()); return; }
-    conn.on('open', () => {
-      const old = conns.get(id); if (old && old !== conn) old.close();
-      conns.set(id, conn); table.setOnline(id, true);
-    });
-    conn.on('data', a => {
-      if (!a || typeof a !== 'object' || typeof a.type !== 'string') return;
-      const out = table.act(id, a);
-      if (typeof out === 'string') conn.send({ error: out });
-    });
-    conn.on('close', () => { if (conns.get(id) === conn) { conns.delete(id); table.setOnline(id, false); } });
-  });
-  peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
+  table.restore(lastView);
+  for (const [id, t] of seen) if (Date.now() - t < HOST_DEAD_MS) table.setOnline(id, true);
   table.setOnline(myId, true);
 }
-function joinAsGuest() {
-  peer = new Peer({ debug: 0 });
-  peer.on('open', () => {
-    hostConn = peer.connect(HOST_PREFIX + code, { metadata: { id: myId }, reliable: true, serialization: 'json' });
-    hostConn.on('data', d => { if (d && d.error) toast(d.error); else if (d && d.players) showState(d); });
-    hostConn.on('close', retry);
-    hostConn.on('error', retry);
-  });
-  peer.on('error', retry);
+function watch() {
+  if (table) {
+    for (const [id, t] of seen) if (Date.now() - t > HOST_DEAD_MS) { seen.delete(id); table.setOnline(id, false); }
+    table.update();                       // heartbeat, keeps the turn clock current for everyone
+  } else if (lastView !== null || links.length) {
+    if (!hostAlive()) setTimeout(() => { if (!table && !hostAlive()) becomeHost(); }, Math.random() * 2000);
+  }
 }
-// host gone or network hiccup: try again; if the host left for good, this browser takes over the table
-function retry() {
-  if (retryT) return;
-  $('#status').textContent = 'Verbindung zum Tisch verloren, verbinde neu';
-  try { if (peer) peer.destroy(); } catch (e) {}
-  peer = null; hostConn = null;
-  retryT = setTimeout(() => { retryT = null; start(); }, 1500 + Math.random() * 2000);
-}
+addEventListener('pagehide', () => { if (table && lastView) post('state', { ts: 0, seq: ++seq, view: lastView }); });
 function send(type, extra) {
   const a = Object.assign({ type }, extra || {});
   if (table) { const out = table.act(myId, a); if (typeof out === 'string') toast(out); return; }
-  if (hostConn && hostConn.open) hostConn.send(a);
-  else toast('Keine Verbindung zum Tisch');
+  if (!links.some(l => l.connected)) { toast('Keine Verbindung zum Tisch'); return; }
+  post('act', a);
 }
 
 /* ---------- game engine: runs only in the host's browser ---------- */
-function createTable(code, onUpdate) {
+function createTable(code, onUpdate, seed) {
   const START = 1000, MAX_SEATS = 6, MAX_HANDS = 4;
   const TURN_MS = 30000, OFFLINE_TURN_MS = 4000, NEXT_ROUND_MS = 8000;
   const BANK_KEY = 't21-bank-' + code;
@@ -276,12 +306,14 @@ function createTable(code, onUpdate) {
   }
   let bank = {};
   try { bank = JSON.parse(localStorage.getItem(BANK_KEY) || '{}') || {}; } catch (e) {}
+  Object.assign(bank, seed || {});
   const r = { players: {}, phase: 'betting', dealer: [], hidden: false, deck: newShoe(), turn: null, turnEnds: 0, round: 0, timer: null, schedKey: '' };
   const online = new Set();
   const draw = () => { if (r.deck.length < 60) r.deck = newShoe(); return r.deck.pop(); };
   const seated = () => Object.values(r.players).sort((a, b) => a.seat - b.seat);
   const newHand = bet => ({ cards: [], bet, status: 'playing', doubled: false, result: null, pay: 0 });
-  const allReady = () => { const ps = seated(); return ps.length > 0 && ps.every(p => p.ready); };
+  // players who went offline do not hold up the deal
+  const allReady = () => { const ps = seated().filter(p => online.has(p.id)); return ps.length > 0 && ps.every(p => p.ready); };
 
   function deal() {
     const ps = seated().filter(p => p.ready && p.bet > 0 && p.bet <= p.chips);
@@ -443,7 +475,17 @@ function createTable(code, onUpdate) {
     onUpdate(view());
   }
   function setOnline(id, on) { if (on) online.add(id); else online.delete(id); update(); }
-  return { act, setOnline, update };
+  // a new host keeps everyone seated; an unfinished round is called off and its bets go back
+  function restore(view) {
+    if (!view) return;
+    view.players.forEach((p, i) => {
+      if (!validId(p.id)) return;
+      const back = view.phase === 'playing' ? p.hands.reduce((a, h) => a + h.bet, 0) : 0;
+      r.players[p.id] = { id: p.id, name: String(p.name).slice(0, 18), chips: p.chips + back, seat: i, bet: p.bet || 0, ready: false,
+                          hands: [], active: 0, inRound: false, delta: 0 };
+    });
+  }
+  return { act, setOnline, update, restore, stop: () => clearTimeout(r.timer) };
 }
 
 /* ---------- cards ---------- */
