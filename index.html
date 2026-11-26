@@ -120,6 +120,7 @@ main{position:relative;flex:1;display:flex;flex-direction:column;align-items:cen
 .go-btn:hover{background:rgba(108,196,149,.1)}
 
 footer{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:12px;min-height:52px}
+.host-note{font-size:11px;color:var(--gold);text-align:center;flex:1;padding-inline:8px}
 .balance small{display:block;font-size:11px;color:var(--ink-3)}
 .balance b{font-weight:600;font-size:16px;font-variant-numeric:tabular-nums}
 .toast{position:fixed;left:50%;top:max(12px,env(safe-area-inset-top));transform:translateX(-50%);background:var(--raise);border:1px solid var(--line-2);padding:8px 16px;border-radius:999px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s var(--ease);z-index:10;white-space:nowrap}
@@ -166,11 +167,13 @@ footer{display:flex;align-items:center;justify-content:space-between;border-top:
   </main>
   <footer>
     <div class="balance" id="balance"></div>
+    <div class="host-note" id="hostNote" hidden>Du bist Gastgeber · lass diese Seite offen</div>
     <button class="pillbtn quiet" id="leave" type="button" hidden>Verlassen</button>
   </footer>
 </div>
 <div class="toast" id="toast" role="status"></div>
 
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 /* ---------- identity and table ---------- */
 const $ = s => document.querySelector(s);
@@ -185,18 +188,262 @@ try { myId = localStorage.getItem('t21-id'); } catch (e) {}
 if (!myId) { myId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)).replace(/[^A-Za-z0-9-]/g, ''); try { localStorage.setItem('t21-id', myId); } catch (e) {} }
 $('#code').textContent = '· ' + code;
 
-let S = null, receivedAt = 0, pending = 0, firstRender = true, lastRound = -1;
+let S = null, receivedAt = 0, firstRender = true, lastRound = -1;
 
-function send(type, extra) {
-  return fetch('/action', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({ t: code, id: myId, type }, extra || {})) })
-    .then(r => r.json()).then(j => { if (j.error) toast(j.error); })
-    .catch(() => toast('Keine Verbindung, bitte nochmal'));
+/* ---------- connection: the first browser on a table link hosts it, everyone else connects to that browser ---------- */
+const HOST_PREFIX = 'tisch21-v1-';
+let peer = null, hostConn = null, table = null, retryT = null;
+const conns = new Map();
+const validId = id => typeof id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(id);
+function showState(view) { S = view; receivedAt = Date.now(); render(); }
+function setConnecting(text) { if (!S) $('#status').textContent = text; }
+
+function start() {
+  clearTimeout(retryT);
+  if (typeof Peer === 'undefined') { $('#status').textContent = 'Verbindungsdienst nicht erreichbar. Seite neu laden.'; return; }
+  setConnecting('Verbinde mit dem Tisch');
+  peer = new Peer(HOST_PREFIX + code, { debug: 0 });
+  peer.on('open', becomeHost);
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { peer.destroy(); joinAsGuest(); }
+    else if (!table) retry();
+  });
 }
-function connect() {
-  const es = new EventSource(`/events?t=${code}&id=${encodeURIComponent(myId)}`);
-  es.onmessage = ev => { S = JSON.parse(ev.data); receivedAt = Date.now(); render(); };
-  es.onerror = () => { $('#status').textContent = 'Verbindung unterbrochen, verbinde neu'; };
+function becomeHost() {
+  table = createTable(code, view => {
+    showState(view);
+    for (const c of conns.values()) if (c.open) c.send(view);
+  });
+  $('#hostNote').hidden = false;
+  peer.on('connection', conn => {
+    const id = conn.metadata && conn.metadata.id;
+    if (!validId(id) || id === myId) { conn.on('open', () => conn.close()); return; }
+    conn.on('open', () => {
+      const old = conns.get(id); if (old && old !== conn) old.close();
+      conns.set(id, conn); table.setOnline(id, true);
+    });
+    conn.on('data', a => {
+      if (!a || typeof a !== 'object' || typeof a.type !== 'string') return;
+      const out = table.act(id, a);
+      if (typeof out === 'string') conn.send({ error: out });
+    });
+    conn.on('close', () => { if (conns.get(id) === conn) { conns.delete(id); table.setOnline(id, false); } });
+  });
+  peer.on('disconnected', () => { if (!peer.destroyed) peer.reconnect(); });
+  table.setOnline(myId, true);
+}
+function joinAsGuest() {
+  peer = new Peer({ debug: 0 });
+  peer.on('open', () => {
+    hostConn = peer.connect(HOST_PREFIX + code, { metadata: { id: myId }, reliable: true, serialization: 'json' });
+    hostConn.on('data', d => { if (d && d.error) toast(d.error); else if (d && d.players) showState(d); });
+    hostConn.on('close', retry);
+    hostConn.on('error', retry);
+  });
+  peer.on('error', retry);
+}
+// host gone or network hiccup: try again; if the host left for good, this browser takes over the table
+function retry() {
+  if (retryT) return;
+  $('#status').textContent = 'Verbindung zum Tisch verloren, verbinde neu';
+  try { if (peer) peer.destroy(); } catch (e) {}
+  peer = null; hostConn = null;
+  retryT = setTimeout(() => { retryT = null; start(); }, 1500 + Math.random() * 2000);
+}
+function send(type, extra) {
+  const a = Object.assign({ type }, extra || {});
+  if (table) { const out = table.act(myId, a); if (typeof out === 'string') toast(out); return; }
+  if (hostConn && hostConn.open) hostConn.send(a);
+  else toast('Keine Verbindung zum Tisch');
+}
+
+/* ---------- game engine: runs only in the host's browser ---------- */
+function createTable(code, onUpdate) {
+  const START = 1000, MAX_SEATS = 6, MAX_HANDS = 4;
+  const TURN_MS = 30000, OFFLINE_TURN_MS = 4000, NEXT_ROUND_MS = 8000;
+  const BANK_KEY = 't21-bank-' + code;
+  const RANKS = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  const rk = c => c.slice(0, -1);
+  const v = r => r === 'A' ? 11 : ['10','J','Q','K'].includes(r) ? 10 : +r;
+  const tot = cards => { let t = 0, a = 0; for (const c of cards) { const r = rk(c); t += v(r); if (r === 'A') a++; } while (t > 21 && a) { t -= 10; a--; } return t; };
+  const bj = cards => cards.length === 2 && tot(cards) === 21;
+  const randInt = n => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; };
+  function newShoe() {
+    const d = [];
+    for (let k = 0; k < 6; k++) for (const s of 'SHDC') for (const r of RANKS) d.push(r + s);
+    for (let i = d.length - 1; i > 0; i--) { const j = randInt(i + 1); [d[i], d[j]] = [d[j], d[i]]; }
+    return d;
+  }
+  let bank = {};
+  try { bank = JSON.parse(localStorage.getItem(BANK_KEY) || '{}') || {}; } catch (e) {}
+  const r = { players: {}, phase: 'betting', dealer: [], hidden: false, deck: newShoe(), turn: null, turnEnds: 0, round: 0, timer: null, schedKey: '' };
+  const online = new Set();
+  const draw = () => { if (r.deck.length < 60) r.deck = newShoe(); return r.deck.pop(); };
+  const seated = () => Object.values(r.players).sort((a, b) => a.seat - b.seat);
+  const newHand = bet => ({ cards: [], bet, status: 'playing', doubled: false, result: null, pay: 0 });
+  const allReady = () => { const ps = seated(); return ps.length > 0 && ps.every(p => p.ready); };
+
+  function deal() {
+    const ps = seated().filter(p => p.ready && p.bet > 0 && p.bet <= p.chips);
+    if (!ps.length) return false;
+    r.round++; r.dealer = []; r.hidden = true;
+    for (const p of seated()) { p.hands = []; p.active = 0; p.inRound = false; p.delta = 0; }
+    for (const p of ps) { p.chips -= p.bet; p.inRound = true; p.hands = [newHand(p.bet)]; }
+    for (let k = 0; k < 2; k++) { for (const p of ps) p.hands[0].cards.push(draw()); r.dealer.push(draw()); }
+    for (const p of ps) if (bj(p.hands[0].cards)) p.hands[0].status = 'blackjack';
+    r.phase = 'playing';
+    if (bj(r.dealer)) finish(); else advance();
+    return true;
+  }
+  function advance() {
+    for (const p of seated()) {
+      if (!p.inRound) continue;
+      const i = p.hands.findIndex(h => h.status === 'playing');
+      if (i >= 0) { r.turn = p.id; p.active = i; return; }
+    }
+    r.turn = null; r.hidden = false;
+    if (seated().some(p => p.inRound && p.hands.some(h => h.status === 'stand')))
+      while (tot(r.dealer) < 17) r.dealer.push(draw());
+    finish();
+  }
+  function finish() {
+    r.hidden = false; r.turn = null; r.phase = 'done';
+    const d = tot(r.dealer), dBJ = bj(r.dealer);
+    for (const p of seated()) {
+      if (!p.inRound) continue;
+      let pay = 0, staked = 0;
+      for (const h of p.hands) {
+        const t = tot(h.cards), pBJ = h.status === 'blackjack';
+        let hp = 0, res;
+        if (h.status === 'bust') res = 'bust';
+        else if (pBJ && dBJ) { hp = h.bet; res = 'push'; }
+        else if (pBJ) { hp = h.bet + Math.floor(h.bet * 1.5); res = 'blackjack'; }
+        else if (dBJ) res = 'lose';
+        else if (d > 21 || t > d) { hp = h.bet * 2; res = 'win'; }
+        else if (t === d) { hp = h.bet; res = 'push'; }
+        else res = 'lose';
+        h.pay = hp; h.result = res; pay += hp; staked += h.bet;
+      }
+      p.chips += pay; p.delta = pay - staked;
+    }
+  }
+  function newRound() {
+    r.phase = 'betting'; r.dealer = []; r.hidden = false; r.turn = null;
+    for (const p of seated()) {
+      if (p.left || !online.has(p.id)) { bank[p.id] = p.chips; delete r.players[p.id]; continue; }
+      p.hands = []; p.active = 0; p.ready = false; p.inRound = false; p.delta = 0;
+      if (p.bet > p.chips) p.bet = 0;
+    }
+  }
+  const canSplit = (p, h) => !!h && h.status === 'playing' && h.cards.length === 2 && p.hands.length < MAX_HANDS
+    && p.chips >= h.bet && v(rk(h.cards[0])) === v(rk(h.cards[1]));
+  const canDouble = (p, h) => !!h && h.status === 'playing' && h.cards.length === 2 && p.chips >= h.bet;
+
+  function act(id, a) {
+    const p = r.players[id];
+    const mine = () => (r.phase === 'playing' && r.turn === id && p) ? p.hands[p.active] : null;
+    let out = false;
+    switch (a.type) {
+      case 'join': {
+        if (p) { p.left = false; out = true; break; }
+        if (seated().length >= MAX_SEATS) return 'Alle 6 Plätze sind belegt';
+        const name = String(a.name || '').trim().slice(0, 18) || 'Gast';
+        r.players[id] = { id, name, chips: typeof bank[id] === 'number' ? bank[id] : START, seat: Date.now(), bet: 0, ready: false,
+                          hands: [], active: 0, inRound: false, delta: 0 };
+        out = true; break;
+      }
+      case 'bet': {
+        const amt = Math.floor(+a.amount);
+        if (!p || r.phase !== 'betting' || !(amt > 0) || amt > p.chips) break;
+        p.bet = amt; p.ready = true;
+        if (allReady()) deal();
+        out = true; break;
+      }
+      case 'unready': if (p && r.phase === 'betting') { p.ready = false; out = true; } break;
+      case 'deal': if (r.phase === 'betting' && p && p.ready) out = deal(); break;
+      case 'hit': {
+        const h = mine(); if (!h) break;
+        h.cards.push(draw()); const t = tot(h.cards);
+        if (t > 21) h.status = 'bust'; else if (t === 21) h.status = 'stand';
+        if (h.status !== 'playing') advance();
+        out = true; break;
+      }
+      case 'stand': { const h = mine(); if (!h) break; h.status = 'stand'; advance(); out = true; break; }
+      case 'double': {
+        const h = mine(); if (!canDouble(p, h)) break;
+        p.chips -= h.bet; h.bet *= 2; h.doubled = true; h.cards.push(draw());
+        h.status = tot(h.cards) > 21 ? 'bust' : 'stand'; advance(); out = true; break;
+      }
+      case 'split': {
+        const h = mine(); if (!canSplit(p, h)) break;
+        p.chips -= h.bet;
+        const nh = newHand(h.bet); nh.cards.push(h.cards.pop());
+        p.hands.splice(p.active + 1, 0, nh);
+        h.cards.push(draw()); nh.cards.push(draw());
+        const aces = rk(h.cards[0]) === 'A';
+        for (const x of [h, nh]) if (aces || tot(x.cards) === 21) x.status = 'stand';
+        if (h.status !== 'playing') advance();
+        out = true; break;
+      }
+      case 'rebuy': if (p && p.chips < 5 && !p.inRound) { p.chips = START; out = true; } break;
+      case 'leave': {
+        if (!p) break;
+        if (r.phase === 'playing' && p.inRound) {
+          p.hands.forEach(h => { if (h.status === 'playing') h.status = 'stand'; });
+          p.left = true;
+          if (r.turn === id) advance();
+        } else { bank[id] = p.chips; delete r.players[id]; }
+        if (r.phase === 'betting' && allReady()) deal();
+        out = true; break;
+      }
+    }
+    if (out) update();
+    return out;
+  }
+
+  function schedule() {
+    const tp = r.turn && r.players[r.turn];
+    const key = [r.phase, r.round, r.turn, tp && tp.active, tp && tp.hands[tp.active] && tp.hands[tp.active].cards.length,
+                 tp && (online.has(r.turn) && !tp.left)].join('|');
+    if (key === r.schedKey) return;
+    r.schedKey = key;
+    clearTimeout(r.timer); r.turnEnds = 0;
+    if (r.phase === 'playing' && tp) {
+      const ms = online.has(r.turn) && !tp.left ? TURN_MS : OFFLINE_TURN_MS;
+      r.turnEnds = Date.now() + ms;
+      const who = r.turn, round = r.round;
+      r.timer = setTimeout(() => {
+        if (r.turn !== who || r.round !== round) return;
+        r.players[who].hands.forEach(h => { if (h.status === 'playing') h.status = 'stand'; });
+        advance(); update();
+      }, ms);
+    } else if (r.phase === 'done') {
+      r.timer = setTimeout(() => { newRound(); update(); }, NEXT_ROUND_MS);
+    }
+  }
+  function view() {
+    return {
+      code, phase: r.phase, round: r.round, turn: r.turn,
+      turnLeft: r.turnEnds ? Math.max(0, r.turnEnds - Date.now()) : 0,
+      dealer: r.hidden ? [r.dealer[0], '??'] : r.dealer,
+      players: seated().filter(p => !p.left || p.inRound).map(p => ({
+        id: p.id, name: p.name, chips: p.chips, bet: p.bet, ready: p.ready, inRound: p.inRound,
+        active: p.active, delta: p.delta, online: online.has(p.id),
+        canSplit: r.turn === p.id && canSplit(p, p.hands[p.active]),
+        canDouble: r.turn === p.id && canDouble(p, p.hands[p.active]),
+        hands: p.hands.map(h => ({ cards: h.cards, bet: h.bet, status: h.status, doubled: h.doubled, result: h.result, pay: h.pay })),
+      })),
+    };
+  }
+  function update() {
+    schedule();
+    // keep every balance in the host's browser, so the table remembers them next time
+    for (const p of seated()) bank[p.id] = p.chips;
+    try { localStorage.setItem(BANK_KEY, JSON.stringify(bank)); } catch (e) {}
+    onUpdate(view());
+  }
+  function setOnline(id, on) { if (on) online.add(id); else online.delete(id); update(); }
+  return { act, setOnline, update };
 }
 
 /* ---------- cards ---------- */
@@ -516,7 +763,7 @@ document.addEventListener('keydown', e => {
   const fn = hotkeys[e.key.toLowerCase()];
   if (fn) { e.preventDefault(); fn(); }
 });
-connect();
+start();
 </script>
 </body>
 </html>
