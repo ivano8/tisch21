@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#141517">
+<title>Tisch 21</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: dealer on top, your seat in the middle, the other players split evenly to your left and right. */
+:root{
+  --bg:#141517; --surface:#1b1c1f; --raise:#26282c;
+  --ink:#f1f1f2; --ink-2:rgba(241,241,242,.62); --ink-3:rgba(241,241,242,.38);
+  --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.16);
+  --go:#6cc495; --stop:#e8796e; --gold:#d6b26a; --blue:#77a6e6;
+  --card:#f6f6f4; --card-ink:#1c1d20; --red:#c0362c; --back:#2f3a55; --back-2:#28324a;
+  --ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --ease:cubic-bezier(.2,.75,.25,1);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.4 var(--ui);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+[hidden]{display:none!important}
+.app{min-height:100%;display:flex;flex-direction:column;max-width:1000px;margin:0 auto;
+  padding:max(12px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+
+header{display:flex;align-items:center;justify-content:space-between;height:44px}
+.brand{font-weight:600;font-size:15px}
+.brand span{color:var(--ink-3);font-weight:400;margin-left:6px}
+.pillbtn{appearance:none;background:transparent;border:1px solid var(--line-2);border-radius:999px;height:36px;padding:0 14px;display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;transition:border-color .15s var(--ease),background-color .15s var(--ease)}
+.pillbtn:hover{border-color:rgba(255,255,255,.4)}
+.pillbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.pillbtn.quiet{border-color:transparent;color:var(--ink-3)}
+.pillbtn.quiet:hover{color:var(--ink)}
+
+main{position:relative;flex:1;display:flex;flex-direction:column;align-items:center;gap:28px;padding-block:16px 24px}
+.shoe{position:absolute;top:12px;right:0;width:48px;height:68px}
+.shoe i{position:absolute;inset:0;border-radius:6px;background:repeating-linear-gradient(45deg,var(--back) 0 4px,var(--back-2) 4px 8px);border:3px solid var(--card)}
+.shoe i:nth-child(1){transform:translate(-5px,3px)}.shoe i:nth-child(2){transform:translate(-2px,1px)}
+
+.dealer{--cw:64px;--ch:92px;display:flex;flex-direction:column;align-items:center;gap:10px}
+.label{font-size:12px;color:var(--ink-3)}
+.status{text-align:center;font-weight:500;font-size:15px;min-height:42px}
+.status .sub{display:block;font-weight:400;font-size:12px;color:var(--ink-3)}
+.status .mine{color:var(--gold)}
+
+/* the ring: left players | you | right players */
+.ring{width:100%;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px;margin-top:auto}
+.col{display:flex;flex-direction:column;align-items:center;gap:22px;min-width:0}
+.center{display:flex;flex-direction:column;align-items:center;gap:16px;min-width:0}
+
+.hand{display:flex;justify-content:center;min-height:var(--ch);padding-left:calc(var(--cw) * .5)}
+.hand .card{margin-left:calc(var(--cw) * -.5)}
+.card{position:relative;width:var(--cw);height:var(--ch);perspective:600px;flex:none}
+.card .in{position:absolute;inset:0;transform-style:preserve-3d;transition:transform .4s var(--ease)}
+.card.down .in{transform:rotateY(180deg)}
+.face{position:absolute;inset:0;border-radius:calc(var(--cw) * .1);backface-visibility:hidden;-webkit-backface-visibility:hidden;box-shadow:0 1px 3px rgba(0,0,0,.45)}
+.front{background:var(--card);color:var(--card-ink);font-weight:600}
+.front.r{color:var(--red)}
+.front .ix{position:absolute;top:6%;left:9%;display:flex;flex-direction:column;align-items:center;line-height:1;font-size:calc(var(--cw) * .24);gap:1px}
+.front .ix span:last-child{font-size:.8em}
+.front .pip{position:absolute;inset:0;display:grid;place-items:center;font-size:calc(var(--cw) * .42)}
+.back{transform:rotateY(180deg);background:repeating-linear-gradient(45deg,var(--back) 0 4px,var(--back-2) 4px 8px);border:3px solid var(--card)}
+
+.total{font-variant-numeric:tabular-nums;font-size:12px;font-weight:500;background:var(--raise);border-radius:6px;padding:2px 8px;min-height:18px}
+.total:empty{visibility:hidden}
+.total.bust{color:var(--stop);background:rgba(232,121,110,.13)}
+.total.good{color:var(--go);background:rgba(108,196,149,.13)}
+.total.now{color:var(--gold);box-shadow:0 0 0 1px var(--gold)}
+.result{font-size:12px;font-weight:600;min-height:17px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.result.win,.result.blackjack{color:var(--go)}.result.lose,.result.bust{color:var(--stop)}.result.push{color:var(--ink-2)}
+.result.show{animation:rise .35s var(--ease) both}
+@keyframes rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+/* other players */
+.seat{--cw:40px;--ch:57px;display:flex;flex-direction:column;align-items:center;gap:6px;max-width:100%}
+.seat .name{font-weight:500;font-size:13px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.seat.turn .name{color:var(--gold)}
+.seat.off .name::after{content:" · offline";color:var(--ink-3);font-weight:400}
+.seat .meta{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:6px}
+.seat .hands{display:flex;gap:10px}
+.seat .hw{display:flex;flex-direction:column;align-items:center;gap:4px}
+.dot{width:10px;height:10px;border-radius:50%;border:2px dashed rgba(255,255,255,.7);box-sizing:border-box}
+
+/* you */
+.me{--cw:66px;--ch:94px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.me .hands{display:flex;gap:22px;justify-content:center;flex-wrap:wrap}
+.me .hw{display:flex;flex-direction:column;align-items:center;gap:10px}
+.me .hands:has(.total.now) .hw:not(:has(.total.now)){opacity:.5}
+.spot{position:relative;width:58px;height:58px;border-radius:50%;border:1px dashed var(--line-2);margin-bottom:16px}
+.spot .amt{position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-size:12px;color:var(--ink-2);white-space:nowrap;font-variant-numeric:tabular-nums}
+.tchip{position:absolute;left:50%;top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border-radius:50%;border:3px dashed rgba(255,255,255,.7);box-shadow:0 0 0 2px rgba(0,0,0,.35),0 2px 3px rgba(0,0,0,.4)}
+.c5{background:#a9463d}.c25{background:#3d8a5e}.c100{background:#34363b}.c500{background:#66508f}
+.me .who{font-size:12px;color:var(--ink-3)}
+
+.actions{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;min-height:72px;align-items:flex-start}
+.act{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:11px;color:var(--ink-2)}
+.rb{appearance:none;width:54px;height:54px;border-radius:50%;background:transparent;border:1px solid var(--line-2);display:grid;place-items:center;cursor:pointer;transition:background-color .15s var(--ease),border-color .15s var(--ease);-webkit-tap-highlight-color:transparent}
+.rb svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.rb b{font-weight:600;font-size:14px}
+.rb.go{color:var(--go);border-color:rgba(108,196,149,.55)}.rb.go:hover{background:rgba(108,196,149,.1)}
+.rb.stop{color:var(--stop);border-color:rgba(232,121,110,.55)}.rb.stop:hover{background:rgba(232,121,110,.1)}
+.rb.gold{color:var(--gold);border-color:rgba(214,178,106,.55)}.rb.gold:hover{background:rgba(214,178,106,.1)}
+.rb.blue{color:var(--blue);border-color:rgba(119,166,230,.55)}.rb.blue:hover{background:rgba(119,166,230,.1)}
+.rb.plain{color:var(--ink-2)}.rb.plain:hover{background:rgba(255,255,255,.05)}
+.chip{appearance:none;width:46px;height:46px;border-radius:50%;border:3px dashed rgba(255,255,255,.7);cursor:pointer;font-weight:600;font-size:12px;color:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.4);transition:transform .12s var(--ease),opacity .15s var(--ease);-webkit-tap-highlight-color:transparent}
+.chip:hover{transform:translateY(-2px)}
+.chip:disabled{opacity:.25;cursor:default;transform:none}
+.chips{display:flex;gap:10px;justify-content:center}
+
+.join{display:flex;flex-direction:column;align-items:center;gap:12px;width:min(320px,100%)}
+.join input{width:100%;height:44px;border-radius:999px;border:1px solid var(--line-2);background:transparent;padding:0 18px;text-align:center}
+.join input::placeholder{color:var(--ink-3)}
+.join .note{font-size:12px;color:var(--ink-3);text-align:center}
+.go-btn{appearance:none;height:44px;width:100%;border-radius:999px;border:1px solid rgba(108,196,149,.6);background:transparent;color:var(--go);font-weight:600;cursor:pointer}
+.go-btn:hover{background:rgba(108,196,149,.1)}
+
+footer{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding-top:12px;min-height:52px}
+.balance small{display:block;font-size:11px;color:var(--ink-3)}
+.balance b{font-weight:600;font-size:16px;font-variant-numeric:tabular-nums}
+.toast{position:fixed;left:50%;top:max(12px,env(safe-area-inset-top));transform:translateX(-50%);background:var(--raise);border:1px solid var(--line-2);padding:8px 16px;border-radius:999px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s var(--ease);z-index:10;white-space:nowrap}
+.toast.on{opacity:1}
+
+@media (max-width:600px){
+  main{gap:22px}
+  .dealer{--cw:54px;--ch:77px}
+  .shoe{width:38px;height:54px}
+  .ring{gap:6px}
+  .col{gap:18px}
+  .seat{--cw:30px;--ch:43px}
+  .seat .name{max-width:80px;font-size:12px}
+  .me{--cw:52px;--ch:74px}
+  .me .hands{gap:14px}
+  .rb{width:48px;height:48px}
+  .actions{gap:12px}
+  .chip{width:42px;height:42px}
+  .chips{gap:8px}
+  .spot{width:50px;height:50px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">Tisch 21<span id="code"></span></div>
+    <button class="pillbtn" id="invite" type="button">
+      <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      Einladen
+    </button>
+  </header>
+  <main>
+    <div class="shoe" id="shoe" aria-hidden="true"><i></i><i></i><i></i></div>
+    <section class="dealer" id="dealer">
+      <div class="label">Dealer</div>
+    </section>
+    <div class="status" id="status">Verbinde mit dem Tisch</div>
+    <section class="ring">
+      <div class="col" id="left"></div>
+      <div class="center" id="center"></div>
+      <div class="col" id="right"></div>
+    </section>
+  </main>
+  <footer>
+    <div class="balance" id="balance"></div>
+    <button class="pillbtn quiet" id="leave" type="button" hidden>Verlassen</button>
+  </footer>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+/* ---------- identity and table ---------- */
+const $ = s => document.querySelector(s);
+const params = new URLSearchParams(location.search);
+let code = (params.get('t') || '').toLowerCase();
+if (!/^[a-z0-9]{3,12}$/.test(code)) {
+  code = Math.random().toString(36).slice(2, 8);
+  history.replaceState(null, '', '?t=' + code);
+}
+let myId;
+try { myId = localStorage.getItem('t21-id'); } catch (e) {}
+if (!myId) { myId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)).replace(/[^A-Za-z0-9-]/g, ''); try { localStorage.setItem('t21-id', myId); } catch (e) {} }
+$('#code').textContent = '· ' + code;
+
+let S = null, receivedAt = 0, pending = 0, firstRender = true, lastRound = -1;
+
+function send(type, extra) {
+  return fetch('/action', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ t: code, id: myId, type }, extra || {})) })
+    .then(r => r.json()).then(j => { if (j.error) toast(j.error); })
+    .catch(() => toast('Keine Verbindung, bitte nochmal'));
+}
+function connect() {
+  const es = new EventSource(`/events?t=${code}&id=${encodeURIComponent(myId)}`);
+  es.onmessage = ev => { S = JSON.parse(ev.data); receivedAt = Date.now(); render(); };
+  es.onerror = () => { $('#status').textContent = 'Verbindung unterbrochen, verbinde neu'; };
+}
+
+/* ---------- cards ---------- */
+const SUIT = { S: '♠︎', H: '♥︎', D: '♦︎', C: '♣︎' };
+const rankOf = c => c.slice(0, -1);
+const val = r => r === 'A' ? 11 : ['10','J','Q','K'].includes(r) ? 10 : +r;
+function total(cards) {
+  let t = 0, a = 0;
+  for (const c of cards) { if (c === '??') continue; const r = rankOf(c); t += val(r); if (r === 'A') a++; }
+  while (t > 21 && a) { t -= 10; a--; }
+  return { t, soft: a > 0 };
+}
+function handText(cards) {
+  const known = cards.filter(c => c !== '??');
+  if (!known.length) return '';
+  const { t, soft } = total(known);
+  if (known.length === 2 && cards.length === 2 && t === 21) return 'Blackjack';
+  if (t > 21) return t + ' · über';
+  return soft && t < 21 ? `${t - 10} / ${t}` : String(t);
+}
+const money = n => '$' + Number(n || 0).toLocaleString('de-DE');
+
+const cardNodes = new Map();   // key -> card element, so cards keep their place between updates
+const totalNodes = new Map();  // key -> total element
+function faceHTML(c) {
+  const s = c.slice(-1), r = rankOf(c), red = s === 'H' || s === 'D';
+  return `<div class="face front${red ? ' r' : ''}"><div class="ix"><span>${r}</span><span>${SUIT[s]}</span></div><div class="pip">${SUIT[s]}</div></div>`;
+}
+function cardNode(key, c) {
+  let n = cardNodes.get(key), fresh = false, reveal = false;
+  if (!n) {
+    n = document.createElement('div'); n.className = 'card';
+    n.innerHTML = `<div class="in">${c === '??' ? '' : faceHTML(c)}<div class="face back"></div></div>`;
+    n.dataset.card = c; cardNodes.set(key, n); fresh = true;
+    if (c === '??') n.classList.add('down');
+  } else if (n.dataset.card !== c) {
+    // the dealer's hole card turns over, or a split moved a card
+    const wasHidden = n.dataset.card === '??';
+    n.querySelector('.in').insertAdjacentHTML('afterbegin', faceHTML(c));
+    const old = n.querySelectorAll('.front'); if (old.length > 1) old[1].remove();
+    n.dataset.card = c; reveal = wasHidden;
+  }
+  return { n, fresh, reveal };
+}
+function totalNode(key) {
+  let n = totalNodes.get(key);
+  if (!n) { n = document.createElement('div'); n.className = 'total'; n._pending = 0; totalNodes.set(key, n); }
+  return n;
+}
+function setTotal(n, text) {
+  n.textContent = text;
+  n.classList.toggle('bust', /über/.test(text));
+  n.classList.toggle('good', text === '21' || text === 'Blackjack');
+}
+
+/* ---------- render ---------- */
+let queue = [], animate = false;
+function buildHand(container, key, cards, seq) {
+  const hand = document.createElement('div'); hand.className = 'hand';
+  const tn = totalNode(key);
+  cards.forEach((c, i) => {
+    const { n, fresh, reveal } = cardNode(key + '|' + i, c);
+    hand.appendChild(n);
+    if (animate && fresh && c !== '??') queue.push({ kind: 'fly', n, seq: seq(i), tn, text: handText(cards.slice(0, i + 1)) });
+    else if (animate && fresh) queue.push({ kind: 'fly', n, seq: seq(i), tn, text: handText(cards.slice(0, i + 1)), keepDown: true });
+    if (animate && reveal) queue.push({ kind: 'flip', n, seq: 500, tn, text: handText(cards.slice(0, i + 1)) });
+  });
+  tn._final = handText(cards);
+  container.append(hand, tn);
+  return tn;
+}
+function chipsFor(a) { const out = []; for (const d of [500, 100, 25, 5]) while (a >= d && out.length < 10) { out.push(d); a -= d; } return out.reverse(); }
+function spot(amount) {
+  const s = document.createElement('div'); s.className = 'spot';
+  chipsFor(amount).forEach((d, i) => { const c = document.createElement('div'); c.className = 'tchip c' + d; c.style.transform = `translateY(${-i * 3}px)`; s.appendChild(c); });
+  const a = document.createElement('div'); a.className = 'amt'; a.textContent = amount ? money(amount) : ''; s.appendChild(a);
+  return s;
+}
+const RESULT = { win: 'Gewonnen', lose: 'Verloren', bust: 'Überkauft', push: 'Unentschieden', blackjack: 'Blackjack' };
+const shownResults = new Set();
+let resultNodes = [];
+function resultNode(key, h) {
+  const r = document.createElement('div'); r.className = 'result';
+  if (S.phase === 'done' && h && h.result) {
+    const d = h.pay - h.bet;
+    r.textContent = RESULT[h.result] + (d > 0 ? ' +' + money(d) : d < 0 ? ' −' + money(-d) : '');
+    r.classList.add(h.result);
+    if (!shownResults.has(key)) { shownResults.add(key); if (animate) resultNodes.push(r); }
+  }
+  return r;
+}
+
+function render() {
+  if (!S) return;
+  queue = []; resultNodes = [];
+  // a hidden tab skips the motion so it is up to date when you come back
+  animate = !firstRender && !document.hidden;
+  if (S.round !== lastRound) { for (const k of [...cardNodes.keys()]) if (!k.startsWith(S.round + '|')) cardNodes.delete(k); for (const k of [...totalNodes.keys()]) if (!k.startsWith(S.round + '|')) totalNodes.delete(k); }
+  const initial = S.round !== lastRound && S.phase !== 'betting';
+  lastRound = S.round;
+
+  const players = S.players;
+  const me = players.find(p => p.id === myId);
+  const inRound = players.filter(p => p.inRound);
+  const n = inRound.length;
+  const seqFor = (p, hi) => i => initial && hi === 0 && i < 2 ? i * (n + 1) + inRound.indexOf(p) : 100 + hi * 10 + i;
+
+  // dealer
+  const dz = $('#dealer'), label = dz.querySelector('.label');
+  const dtmp = document.createElement('div');
+  buildHand(dtmp, S.round + '|d|0', S.dealer, i => initial && i < 2 ? i * (n + 1) + n : 600 + i);
+  dz.replaceChildren(label, ...dtmp.children);
+
+  // seats: others split evenly to your left and right, in seat order starting after you
+  const mi = players.indexOf(me);
+  const others = mi < 0 ? players.slice() : players.slice(mi + 1).concat(players.slice(0, mi));
+  const half = Math.ceil(others.length / 2);
+  const left = $('#left'), right = $('#right');
+  left.textContent = ''; right.textContent = '';
+  others.forEach((p, i) => (i < half ? right : left).appendChild(seatEl(p, seqFor)));
+  // players after you sit to your right, the rest to your left
+  [...left.children].reverse().forEach(c => left.appendChild(c));
+
+  renderCenter(me, seqFor);
+  renderFooter(me);
+
+  // play the queue: one card at a time, totals follow each card
+  queue.sort((a, b) => a.seq - b.seq);
+  const shoe = $('#shoe').getBoundingClientRect();
+  let t = 0;
+  for (const q of queue) {
+    if (q.kind === 'fly') {
+      if (!q.keepDown) q.n.classList.add('down');
+      fly(q.n, shoe, t);
+      const landAt = t + 520;
+      if (!q.keepDown) setTimeout(() => q.n.classList.remove('down'), landAt - 80);
+      if (!q.keepDown) later(q.tn, landAt + 120, q.text);
+      t += 330;
+    } else {
+      const at = t + 250;
+      setTimeout(() => q.n.classList.remove('down'), at);
+      later(q.tn, at + 350, q.text);
+      t += 650;
+    }
+  }
+  const settle = queue.length ? t + 500 : 0;
+  // totals with nothing in flight show their final value
+  for (const tn of totalNodes.values()) if (!tn._pending) setTotal(tn, tn._final || '');
+  for (const r of resultNodes) { r.classList.add('show'); r.style.animationDelay = settle + 'ms'; }
+  settleUntil = Math.max(settleUntil, Date.now() + settle);
+  renderStatus();
+  firstRender = false;
+}
+let settleUntil = 0;
+function later(tn, ms, text) {
+  tn._pending++;
+  setTimeout(() => { tn._pending--; setTotal(tn, tn._pending ? text : (tn._final ?? text)); }, ms);
+}
+function fly(n, from, delayMs) {
+  const to = n.getBoundingClientRect();
+  const dx = (from.left + from.width / 2) - (to.left + to.width / 2), dy = (from.top + from.height / 2) - (to.top + to.height / 2);
+  const start = `translate(${dx}px,${dy}px) rotate(-10deg)`;
+  n.animate([{ transform: start, opacity: 0 }, { transform: start, opacity: 1, offset: .08 }, { transform: 'none', opacity: 1 }],
+    { duration: 520, delay: delayMs, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'backwards' });
+}
+
+function seatEl(p, seqFor) {
+  const s = document.createElement('div');
+  s.className = 'seat' + (S.turn === p.id ? ' turn' : '') + (p.online ? '' : ' off');
+  const hands = document.createElement('div'); hands.className = 'hands';
+  if (p.inRound) p.hands.forEach((h, hi) => {
+    const hw = document.createElement('div'); hw.className = 'hw';
+    const tn = buildHand(hw, `${S.round}|${p.id}|${hi}`, h.cards, seqFor(p, hi));
+    tn.classList.toggle('now', S.turn === p.id && p.hands.length > 1 && p.active === hi);
+    hw.appendChild(resultNode(`${S.round}|${p.id}|${hi}`, h));
+    hands.appendChild(hw);
+  });
+  const name = document.createElement('div'); name.className = 'name'; name.textContent = p.name;
+  const meta = document.createElement('div'); meta.className = 'meta';
+  const bet = S.phase === 'betting' ? (p.ready ? p.bet : 0) : (p.inRound ? p.hands.reduce((a, h) => a + (S.phase === 'done' ? 0 : h.bet), 0) : 0);
+  if (bet) { const d = document.createElement('span'); d.className = 'dot ' + 'c' + chipsFor(bet).pop(); meta.appendChild(d); meta.append(money(bet) + ' · '); }
+  meta.append(money(p.chips));
+  if (S.phase !== 'betting' && !p.inRound) meta.append(' · nächste Runde');
+  if (S.phase === 'betting') meta.append(p.ready ? ' · bereit' : '');
+  s.append(hands, name, meta);
+  return s;
+}
+
+/* ---------- you ---------- */
+let pendingBet = 0, betTouched = false;
+const ICON = {
+  hit: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  stand: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
+  split: '<svg viewBox="0 0 24 24"><path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.17-2.83L3 3"/><path d="m15 9 6-6"/></svg>',
+  double: '<b>2×</b>',
+  check: '<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>',
+  undo: '<svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+  play: '<svg viewBox="0 0 24 24"><path d="m7 4 13 8-13 8z"/></svg>',
+};
+let hotkeys = {};
+function act(label, icon, tone, fn, key) {
+  const w = document.createElement('div'); w.className = 'act';
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'rb ' + tone; b.innerHTML = ICON[icon];
+  b.setAttribute('aria-label', label); b.onclick = fn;
+  const l = document.createElement('span'); l.textContent = label;
+  if (key) hotkeys[key] = fn;
+  w.append(b, l); return w;
+}
+function renderCenter(me, seqFor) {
+  const c = $('#center'); c.textContent = ''; hotkeys = {};
+  if (!me) {
+    const f = document.createElement('form'); f.className = 'join';
+    const inp = document.createElement('input'); inp.id = 'name'; inp.placeholder = 'Dein Name'; inp.maxLength = 18; inp.autocomplete = 'nickname';
+    try { inp.value = localStorage.getItem('t21-name') || ''; } catch (e) {}
+    const b = document.createElement('button'); b.type = 'submit'; b.className = 'go-btn'; b.textContent = 'Platz nehmen';
+    const note = document.createElement('div'); note.className = 'note';
+    note.textContent = players().length >= 6 ? 'Der Tisch ist voll' : 'Jeder startet mit $1.000 · Blackjack zahlt 3:2 · Dealer steht auf 17';
+    f.onsubmit = e => { e.preventDefault(); const name = inp.value.trim() || 'Gast'; try { localStorage.setItem('t21-name', name); } catch (e) {} send('join', { name }); };
+    f.append(inp, b, note); c.appendChild(f);
+    return;
+  }
+  const wrap = document.createElement('div'); wrap.className = 'me';
+  const hands = document.createElement('div'); hands.className = 'hands';
+  if (S.phase === 'betting') {
+    if (!betTouched) pendingBet = Math.min(me.bet || 0, me.chips);
+    pendingBet = Math.min(pendingBet, me.chips);
+    const hw = document.createElement('div'); hw.className = 'hw';
+    hw.appendChild(spot(me.ready ? me.bet : pendingBet));
+    hands.appendChild(hw);
+  } else if (me.inRound) {
+    me.hands.forEach((h, hi) => {
+      const hw = document.createElement('div'); hw.className = 'hw';
+      const tn = buildHand(hw, `${S.round}|${me.id}|${hi}`, h.cards, seqFor(me, hi));
+      tn.classList.toggle('now', S.turn === me.id && me.hands.length > 1 && me.active === hi);
+      hw.appendChild(spot(S.phase === 'done' ? h.pay : h.bet));
+      hw.appendChild(resultNode(`${S.round}|${me.id}|${hi}`, h));
+      hands.appendChild(hw);
+    });
+  } else {
+    const w = document.createElement('div'); w.className = 'who'; w.textContent = 'Du spielst ab der nächsten Runde mit'; hands.appendChild(w);
+  }
+  const acts = document.createElement('div'); acts.className = 'actions';
+  if (S.phase === 'betting') {
+    if (me.chips < 5) acts.append(act('Neu einkaufen', 'check', 'go', () => send('rebuy')));
+    else if (me.ready) {
+      acts.append(act('Ändern', 'undo', 'plain', () => send('unready')));
+      if (players().some(p => !p.ready)) acts.append(act('Austeilen', 'play', 'go', () => send('deal'), 'enter'));
+    } else {
+      const chips = document.createElement('div'); chips.className = 'chips';
+      for (const v of [5, 25, 100, 500]) {
+        const b = document.createElement('button'); b.type = 'button'; b.className = 'chip c' + v; b.textContent = v;
+        b.disabled = pendingBet + v > me.chips; b.setAttribute('aria-label', v + ' Dollar setzen');
+        b.onclick = () => { betTouched = true; pendingBet += v; render(); };
+        chips.appendChild(b);
+      }
+      wrap.append(hands, chips);
+      if (pendingBet) {
+        acts.append(act('Zurück', 'undo', 'plain', () => { betTouched = true; pendingBet = 0; render(); }),
+                    act('Setzen', 'check', 'go', () => { betTouched = false; send('bet', { amount: pendingBet }); }, 'enter'));
+      }
+      wrap.append(acts); c.appendChild(wrap); return;
+    }
+  } else if (S.phase === 'playing' && S.turn === me.id) {
+    acts.append(act('Halten', 'stand', 'stop', () => send('stand'), 's'), act('Karte', 'hit', 'go', () => send('hit'), 'h'));
+    if (me.canDouble) acts.append(act('Doppelt', 'double', 'gold', () => send('double'), 'd'));
+    if (me.canSplit) acts.append(act('Split', 'split', 'blue', () => send('split'), 'p'));
+  }
+  wrap.append(hands, acts); c.appendChild(wrap);
+}
+const players = () => (S ? S.players : []);
+function renderFooter(me) {
+  const b = $('#balance'); b.textContent = '';
+  $('#leave').hidden = !me;
+  if (!me) return;
+  const s = document.createElement('small'); s.textContent = 'Guthaben';
+  const v = document.createElement('b');
+  const shown = me.chips - (S.phase === 'betting' && !me.ready ? pendingBet : 0);
+  v.textContent = money(shown);
+  b.append(s, v);
+}
+function renderStatus() {
+  const el = $('#status'); el.textContent = '';
+  const main = document.createElement('span'), sub = document.createElement('span'); sub.className = 'sub';
+  const ps = players();
+  if (!ps.length) { main.textContent = 'Der Tisch ist leer'; sub.textContent = 'Nimm Platz und lade Kollegen über „Einladen“ ein'; }
+  else if (S.phase === 'betting') {
+    main.textContent = 'Einsätze bitte';
+    sub.textContent = `${ps.filter(p => p.ready).length} von ${ps.length} bereit · es geht los, sobald alle gesetzt haben`;
+  } else if (S.phase === 'playing') {
+    const left = Math.max(0, Math.ceil((S.turnLeft - (Date.now() - receivedAt)) / 1000));
+    const tp = ps.find(p => p.id === S.turn);
+    if (S.turn === myId) { main.textContent = 'Du bist am Zug'; main.className = 'mine'; }
+    else main.textContent = `${tp ? tp.name : 'Gast'} ist am Zug`;
+    sub.textContent = `${left} s`;
+  } else if (Date.now() < settleUntil) {
+    main.textContent = 'Dealer spielt';
+  } else {
+    const d = total(S.dealer).t;
+    main.textContent = d > 21 ? `Dealer überkauft mit ${d}` : `Dealer hat ${d}`;
+    sub.textContent = 'Nächste Runde startet gleich';
+  }
+  el.append(main, sub);
+}
+setInterval(() => { if (S && S.phase !== 'betting') renderStatus(); }, 500);
+
+/* ---------- misc ---------- */
+let toastT;
+function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2400); }
+$('#invite').onclick = async () => {
+  const url = location.href;
+  if (navigator.share) { try { await navigator.share({ title: 'Tisch 21', text: 'Spiel Blackjack mit mir', url }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(url); toast('Link kopiert'); } catch (e) { toast(url); }
+};
+$('#leave').onclick = () => send('leave');
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input') || e.metaKey || e.ctrlKey || e.altKey) return;
+  const fn = hotkeys[e.key.toLowerCase()];
+  if (fn) { e.preventDefault(); fn(); }
+});
+connect();
+</script>
+</body>
+</html>
